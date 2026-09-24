@@ -1,0 +1,15 @@
+# Manual control over the deterministic matcher. Applied at every universe rebuild.
+# exclude: drop a pair entirely (bad match, rule mismatch found by reading both contracts).
+# reclass: force exact or basis after reading the settlement rules on both venues.
+#
+# exclude:
+#   - pair_id: crypto-0123456789
+#     note: "Kalshi settles on CF Benchmarks at 17:00 ET, Polymarket on Binance at 12:00 ET"
+#   - key_regex: "^crypto\\|XRP"
+#     note: "not interested"
+# reclass:
+#   - pair_id: sports-abcdef0123
+#     klass: exact
+#     note: "checked tie and postponement clauses on 2026-09-18"
+exclude: []
+reclass: []

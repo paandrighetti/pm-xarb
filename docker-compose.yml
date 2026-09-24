@@ -1,0 +1,21 @@
+services:
+  desk:
+    build: .
+    image: pm-xarb:latest
+    container_name: pm-xarb
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/data
+      - ./config.yaml:/app/config.yaml:ro
+      - ./config:/app/config:ro
+    # The CX22 has 4 GB shared with updown-desk; this desk is a poller and stays well below.
+    mem_limit: 768m
+    memswap_limit: 768m
+    cpus: 1.0
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

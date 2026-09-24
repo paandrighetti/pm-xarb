@@ -1,0 +1,125 @@
+# pm-xarb configuration. Every number that changes the economics lives here, not in code.
+# Paths are inside the container; docker-compose mounts ./data at /data.
+
+data_dir: /data
+
+venues:
+  kalshi:
+    base_url: https://api.elections.kalshi.com/trade-api/v2
+    # Requests per second we allow ourselves. Kalshi Basic tier is 200 read tokens/s;
+    # we stay far below it on purpose.
+    max_rps: 8
+    orderbook_batch: 100        # documented maximum for GET /markets/orderbooks
+    candle_batch_periods: 4000  # 1-minute candles requested per call in the history module
+    # Fee curve, July 2026 schedule: fee = round_up(M * 0.07 * C * P * (1-P)).
+    taker_rate: 0.07
+    maker_rate: 0.0175
+    fee_rounding: 0.0001        # schedule rounds fee + cost up to a centicent
+    default_fee_multiplier: 1.0 # overridden per series by GET /series/{ticker}.fee_multiplier
+    # Series to pull into the universe, per family. Verify with `pmx series --grep BTC` on first run;
+    # tickers are the only thing here that cannot be validated offline.
+    series:
+      crypto: [KXBTC, KXBTCD, KXETH, KXETHD, KXSOL, KXSOLD, KXXRP, KXXRPD]
+      macro: [KXFEDDECISION, KXFED, KXCPI, KXCPIYOY]
+      sports: [KXNFLGAME, KXMLBGAME, KXNBAGAME]
+  polymarket:
+    gamma_url: https://gamma-api.polymarket.com
+    clob_url: https://clob.polymarket.com
+    max_rps: 8
+    book_batch: 50              # token ids per POST /books
+    events_page: 200
+    history_points: 720         # documented ceiling per prices-history response
+    # Taker fee = C * rate * P * (1-P), makers pay 0. Rates by category, 2026 schedule.
+    taker_rates:
+      crypto: 0.07
+      sports: 0.05
+      economics: 0.05
+      culture: 0.05
+      weather: 0.05
+      politics: 0.04
+      finance: 0.04
+      tech: 0.04
+      mentions: 0.04
+      geopolitics: 0.0
+      other: 0.05               # conservative fallback when tags do not map
+    # Event tag slugs mapped to fee categories.
+    tag_categories:
+      crypto: crypto
+      bitcoin: crypto
+      ethereum: crypto
+      solana: crypto
+      sports: sports
+      nfl: sports
+      nba: sports
+      mlb: sports
+      economy: economics
+      economics: economics
+      fed: economics
+      inflation: economics
+      cpi: economics
+      politics: politics
+      finance: finance
+      tech: tech
+      weather: weather
+      geopolitics: geopolitics
+
+universe:
+  refresh_utc_hour: 5           # daily universe rebuild
+  min_volume_24h_usd: 500       # Polymarket volume24hr floor
+  min_kalshi_volume: 200        # contracts, lifetime
+  max_days_to_close: 45         # ignore markets closing further out (capital lock-up)
+  leagues: [NFL, MLB, NBA]      # sports parsers enabled; soccer excluded in v1 (draw handling)
+  sports_date_tolerance_days: 1
+  overrides_file: config/pair_overrides.yaml   # relative paths resolve against this file's directory
+  teams_file: config/teams.yaml
+
+recorder:
+  poll_seconds: 3.0
+  depth_levels: 5               # levels persisted per side
+  record_mode: changes          # changes | all
+  rotate_minutes: 60
+  gzip_after_minutes: 120       # compress closed files older than this
+
+scanner:
+  min_edge: 0.002               # net of fees, per contract, in dollars
+  min_qty: 5                    # contracts; below this the opportunity is noise
+  # Poly quotes below this size at best ask are treated as stale (paper) and skipped
+  min_level_size: 2
+
+paper:
+  capital_per_venue_usd: 10000
+  max_notional_per_pair_usd: 500
+  # Which resolution classes get real paper capital. Only `exact` pairs are an arbitrage; `basis`
+  # pairs are a bet that two different measurements of the same event agree, which is a different
+  # trade with a different risk. They stay detected, recorded and settled, and the report computes
+  # what a hedge would have returned, without deploying capital or taking leg risk.
+  execute_classes: [exact]
+  max_notional_per_class_usd:
+    exact: 8000
+    basis: 2500
+  execution_model: joint        # joint (atomic upper bound) | sequenced (first leg alone, second on the residual budget)
+  edge_retention: 0.5           # fraction of the detected edge a fill must keep; 0 = anything at or below par
+  first_leg: kalshi             # sequenced only; the quote that leads price discovery is on the other side
+  on_leg_failure: unwind        # unwind | hold
+  failure_cooldown_polls: 20    # polls to wait on a pair after a leg failure
+  mtm_utc_hour: 6
+
+resolution:
+  sweep_minutes: 15
+  escrow_max_days: 7
+
+report:
+  utc_hour: 6
+  git_push: false               # set true once a deploy key is mounted, see deploy/DEPLOY.md
+  git_dir: /data/reports_repo
+
+history:
+  enabled: true
+  weekday: 0                    # Monday, UTC
+  utc_hour: 7
+  days: 7
+  top_pairs: 40
+  poly_half_spread: 0.01        # assumption, reported as such
+
+telegram:
+  enabled: true                 # needs TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in the environment
