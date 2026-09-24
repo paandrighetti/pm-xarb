@@ -64,7 +64,9 @@ def test_hedged_fill_then_exact_settlement(cfg, fees, tmp_path):
     assert desk.open_pairs() == set()
 
 
-def test_leg_failure_is_unwound_at_market(cfg, fees, tmp_path):
+def test_joint_model_leaves_both_legs_alone_when_one_moves(cfg, fees, tmp_path):
+    # joint (the default): nothing is bought unless both legs are still jointly profitable
+    assert cfg.paper.execution_model == "joint"
     bl = Blotter(tmp_path / "blotter")
     desk = PaperDesk(cfg.paper, fees, bl)
     sc = Scanner(cfg.scanner, fees, cfg.paper.max_notional_per_pair_usd)
@@ -72,21 +74,44 @@ def test_leg_failure_is_unwound_at_market(cfg, fees, tmp_path):
     pairs = {pair.pair_id: pair}
     b1 = books(0.40, 100, 0.55, 100, ts=10.0)
     desk.consider(1, 10.0, sc.scan_pair(pair, b1["sports-test"], 10.0), pairs, 10.0)
-    # poly ask jumped beyond the limit before our order arrived; kalshi still there
+    cash0 = dict(desk.cash)
+    # poly ask jumped beyond the edge before our orders arrived; kalshi still there
     b2 = books(0.40, 100, 0.70, 100, ts=13.0)
     desk.on_snapshot(2, 13.0, b2, pairs)
     out = read(bl.root, "intent_outcomes")[-1]
-    assert out["status"] == "unwinding" and out["qty_a"] == 100 and out["qty_b"] == 0
+    assert out["status"] == "missed" and out["reason"] == "edge_gone"
+    assert out["qty_a"] == 0 and out["qty_b"] == 0
+    assert desk.cash == cash0 and not desk.intents
     assert desk.cooldown[pair.pair_id] >= 2
-    # next poll: naked kalshi YES sold into the bid (0.37) -> loss of spread plus fees
-    b3 = books(0.40, 100, 0.70, 100, ts=16.0)
+    # cooldown blocks a new intent on the same pair
+    assert desk.consider(3, 16.0, sc.scan_pair(pair, b1["sports-test"], 16.0), pairs, 16.0) == []
+
+
+def test_sequenced_leg_failure_is_unwound_at_market(cfg, fees, tmp_path):
+    cfg.paper.execution_model = "sequenced"
+    bl = Blotter(tmp_path / "blotter")
+    desk = PaperDesk(cfg.paper, fees, bl)
+    sc = Scanner(cfg.scanner, fees, cfg.paper.max_notional_per_pair_usd)
+    pair = make_pair()
+    pairs = {pair.pair_id: pair}
+    b1 = books(0.40, 100, 0.55, 100, ts=10.0)
+    (intent,) = desk.consider(1, 10.0, sc.scan_pair(pair, b1["sports-test"], 10.0), pairs, 10.0)
+    desk.on_snapshot(2, 13.0, b1, pairs)                  # first leg fills alone
+    first = intent.first_venue
+    assert intent.stage == 2 and first in (KALSHI, POLYMARKET)
+    # the other leg's ask jumps before it is sent; the first leg's book does not move
+    b3 = books(0.40, 100, 0.70, 100, ts=16.0) if first == KALSHI else books(0.70, 100, 0.55, 100, ts=16.0)
     desk.on_snapshot(3, 16.0, b3, pairs)
+    out = read(bl.root, "intent_outcomes")[-1]
+    assert out["status"] == "unwinding" and sorted((out["qty_a"], out["qty_b"])) == [0, 100]
+    assert desk.cooldown[pair.pair_id] >= 3
+    # next poll: the naked first leg is sold into its bid -> loss of spread plus fees
+    desk.on_snapshot(4, 19.0, b3, pairs)
     unw = read(bl.root, "unwinds")[-1]
     assert unw["qty"] == 100 and unw["pnl"] < 0
-    assert desk.positions[f"{pair.pair_id}|kalshi|yes"].qty == 0
     assert desk.stats["unwound"] == 1 and not desk.intents
     # cooldown blocks a new intent on the same pair
-    assert desk.consider(4, 19.0, sc.scan_pair(pair, b1["sports-test"], 19.0), pairs, 19.0) == []
+    assert desk.consider(5, 22.0, sc.scan_pair(pair, b1["sports-test"], 22.0), pairs, 22.0) == []
 
 
 def test_basis_pair_can_diverge(cfg, fees, tmp_path):
@@ -284,4 +309,11 @@ def test_only_one_hedge_per_pair_at_a_time(cfg, fees, tmp_path):
     assert desk.consider(3, 16.0, sc.scan_pair(pair, b2["sports-test"], 16.0), pairs, 16.0) == []
     desk.settle(pair, {KALSHI: 1.0, POLYMARKET: 1.0}, 20.0)
     assert desk.open_pairs() == set()
-    assert desk.consider(4, 23.0, sc.scan_pair(pair, b1["sports-test"], 23.0), pairs, 23.0)
+    # a settled pair is over: its books are stale, so its event takes no new hedge
+    assert desk.consider(4, 23.0, sc.scan_pair(pair, b1["sports-test"], 23.0), pairs, 23.0) == []
+    # the desk itself is free again: another event can be hedged
+    other = Pair("sports-test-2", "sports", "sports|NFL|2026-09-19|NYG", "exact",
+                 {KALSHI: kalshi_leg(ticker="KXTEST-2"), POLYMARKET: poly_leg(cond="0xdef", cat="sports")},
+                 created_ts=1.0)
+    opps = sc.scan_pair(other, b1["sports-test"], 26.0)
+    assert desk.consider(5, 26.0, opps, {**pairs, other.pair_id: other}, 26.0)
