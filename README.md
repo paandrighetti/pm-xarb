@@ -7,6 +7,13 @@ reports daily. It runs unattended in one container.
 
 It is a measurement instrument, not a trading bot. Nothing here signs an order.
 
+## Results so far
+
+[pm-edge-report](https://github.com/paandrighetti/pm-edge-report), section 5, analyses the
+desk's outputs up to 23 September 2026. Exact pairs: edges after fees that often last a single
+poll, no divergent settlement, and a net paper loss so far. Basis pairs: more entry edge than
+exact pairs, and a negative result at settlement over the pairs resolved so far.
+
 ## What question it answers
 
 When Kalshi and Polymarket quote the same event at prices that sum to less than one, how much of
