@@ -9,6 +9,7 @@
   pmx status              print paper state and health
   pmx peek [--hours 3]    what the desk saw recently: detections per pair with titles, intents, positions
   pmx recover [--void]    list, and optionally void, positions whose pair definition was lost
+  pmx final [--since D]   exact-class result, with the sports pairs that matched two different games set apart
 """
 from __future__ import annotations
 
@@ -359,6 +360,77 @@ def cmd_recover(cfg: Config, do_void: bool) -> int:
     return 0
 
 
+def _other_game(pd: dict) -> bool:
+    """True when an archived sports pair joined two different games under the matcher's start-time
+    rule: scheduled starts more than SPORTS_START_TOLERANCE_S apart, or, when the Kalshi ticker
+    carries no start, different Eastern days."""
+    from .matching.matcher import SPORTS_START_TOLERANCE_S
+    from .matching.normalize import ET, parse_iso, ticker_start
+
+    if pd.get("family") != "sports":
+        return False
+    ps = parse_iso((pd["legs"]["polymarket"].get("extra") or {}).get("game_start"))
+    ks = ticker_start(pd["legs"]["kalshi"].get("market_id"))
+    if ks and ps:
+        return abs((ks - ps).total_seconds()) > SPORTS_START_TOLERANCE_S
+    return bool(ps) and ps.astimezone(ET).date().isoformat() != pd["key"].split("|")[2]
+
+
+def cmd_final(cfg: Config, since: str | None) -> int:
+    """Exact-class result since inception, or since a UTC day, with the pairs `_other_game` flags
+    in the archived definitions set apart. Reads the blotter with DuckDB; prints markdown."""
+    import duckdb
+
+    defs: dict[str, dict] = {}
+    for f in sorted((cfg.data / "universe").glob("pairs_*.json")):
+        try:
+            for pd in json.loads(f.read_text(encoding="utf-8")).get("pairs", []):
+                defs[pd["pair_id"]] = pd
+        except (OSError, ValueError):
+            continue
+    flagged = sorted(pid for pid, pd in defs.items() if _other_game(pd))
+    t0 = datetime.strptime(since, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() if since else 0.0
+    con = duckdb.connect()
+    con.execute("CREATE TABLE flagged (pair_id VARCHAR)")
+    if flagged:
+        con.executemany("INSERT INTO flagged VALUES (?)", [(p,) for p in flagged])
+    bl = cfg.data / "blotter"
+
+    def table(title: str, path: str, select: str) -> None:
+        print(f"\n### {title}\n")
+        p = bl / path
+        if not p.exists() or p.stat().st_size == 0:
+            print("no data")
+            return
+        try:
+            cur = con.execute(f"SELECT pair_id IN (SELECT pair_id FROM flagged) AS other_game, {select} "
+                              f"FROM read_ndjson_auto('{p.as_posix()}', ignore_errors=true) "
+                              "WHERE klass = 'exact' AND ts >= ? GROUP BY 1 ORDER BY 1", [t0])
+        except duckdb.Error as exc:
+            print(f"({path}: {exc})")
+            return
+        cols = [d[0] for d in cur.description]
+        print("| " + " | ".join(cols) + " |\n|" + "---|" * len(cols))
+        for row in cur.fetchall():
+            print("| " + " | ".join("" if v is None else str(v) for v in row) + " |")
+
+    print(f"# pm-xarb, exact class{' since ' + since if since else ''}\n")
+    print(f"{len(flagged)} archived sports pairs joined two different games:")
+    for pid in flagged:
+        pd = defs[pid]
+        print(f"- {pid} {pd['key']}: kalshi {pd['legs']['kalshi']['market_id']}, "
+              f"polymarket start {(pd['legs']['polymarket'].get('extra') or {}).get('game_start')}")
+    table("Resolutions", "resolutions.jsonl",
+          "count(DISTINCT pair_id) AS pairs, count(DISTINCT CASE WHEN divergent THEN pair_id END) AS divergent, "
+          "round(sum(pnl), 2) AS pnl_usd")
+    table("Filled intents", "intent_outcomes.jsonl",
+          "count(*) FILTER (WHERE status = 'filled') AS filled, sum(hedged) FILTER (WHERE status = 'filled') AS contracts, "
+          "count(*) FILTER (WHERE status = 'missed') AS missed")
+    table("Detections", "detections.jsonl",
+          "count(*) AS n, round(100 * avg(edge_per_contract), 3) AS mean_edge_cents")
+    return 0
+
+
 def cmd_status(cfg: Config) -> int:
     p = cfg.path("state", "paper_state.json")
     if not p.exists():
@@ -388,6 +460,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("status")
     pk = sub.add_parser("peek"); pk.add_argument("--hours", type=float, default=3.0, help="look-back window (default 3)")
     rc = sub.add_parser("recover"); rc.add_argument("--void", action="store_true", help="void positions whose pair definition is lost")
+    fn = sub.add_parser("final"); fn.add_argument("--since", default=None, help="UTC day YYYY-MM-DD (default: inception)")
     a = ap.parse_args(argv)
     _log(a.verbose)
     cfg = load_config(a.config)
@@ -411,6 +484,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_peek(cfg, a.hours)
     if a.cmd == "recover":
         return cmd_recover(cfg, a.void)
+    if a.cmd == "final":
+        return cmd_final(cfg, a.since)
     return 2
 
 

@@ -5,7 +5,7 @@ import json
 from pmxarb.matching.families import (fomc_kind, kalshi_crypto, kalshi_macro, kalshi_sports, poly_crypto, poly_family,
                                       poly_macro, poly_sports)
 from pmxarb.matching.matcher import Overrides, build_pairs
-from pmxarb.matching.normalize import find_clock_et, find_month_day, parse_number, ticker_date
+from pmxarb.matching.normalize import find_clock_et, find_month_day, parse_number, ticker_date, ticker_start
 
 SERIES_BTC = {"ticker": "KXBTCD", "fee_multiplier": 1.0, "fee_type": "quadratic",
               "settlement_sources": [{"name": "CF Benchmarks", "url": "https://cfbenchmarks.com"}]}
@@ -140,19 +140,64 @@ def test_sports_both_sides_pair_with_polarity(cfg, fees, teams):
     assert len(poly_family(ev, m, cfg.universe, fees, teams)) == 2
 
 
-def test_sports_loose_date_join_and_overrides(cfg, fees, teams):
+def test_sports_loose_date_join_needs_start_times_and_overrides(cfg, fees, teams):
+    # an NFL ticker carries the day only: a game on another Eastern day cannot be shown to be the same
     event = {"event_ticker": "KXNFLGAME-26SEP19DALNYG", "title": "Dallas Cowboys at New York Giants",
              "markets": [{"ticker": "X-DAL", "yes_sub_title": "Dallas", "title": "", "close_time": "2026-09-19T03:30:00Z", "volume_fp": "1.00"}]}
     k_legs = kalshi_sports(event, SERIES_NFL, "NFL", teams)
     ev = p_event(["nfl"], [])
     m = p_market("Cowboys vs. Giants", outcomes=("Cowboys", "Giants"), tokens=("t_dal", "t_nyg"), gameStartTime="2026-09-19 00:20:00+00")
     p_legs = [l for l in poly_sports(ev, m, fees, "NFL", teams) if l.meta["side"] == "DAL"]
-    pairs, _ = build_pairs(k_legs, p_legs, cfg, Overrides({}))
-    assert len(pairs) == 1 and pairs[0].klass == "exact" and any("game day differs" in n for n in pairs[0].notes)
+    assert build_pairs(k_legs, p_legs, cfg, Overrides({}))[0] == []
+    # same day: paired, and the overrides apply
+    k_same = kalshi_sports(dict(event, event_ticker="KXNFLGAME-26SEP18DALNYG"), SERIES_NFL, "NFL", teams)
+    pairs, _ = build_pairs(k_same, p_legs, cfg, Overrides({}))
+    assert len(pairs) == 1 and pairs[0].klass == "exact"
     ov = Overrides({"exclude": [{"key_regex": r"^sports\|NFL"}]})
-    assert build_pairs(k_legs, p_legs, cfg, ov)[0] == []
+    assert build_pairs(k_same, p_legs, cfg, ov)[0] == []
     ov2 = Overrides({"reclass": [{"pair_id": pairs[0].pair_id, "klass": "basis", "note": "test"}]})
-    assert build_pairs(k_legs, p_legs, cfg, ov2)[0][0].klass == "basis"
+    assert build_pairs(k_same, p_legs, cfg, ov2)[0][0].klass == "basis"
+
+
+def test_ticker_start():
+    assert ticker_start("KXMLBGAME-26SEP231835TORBAL").isoformat() == "2026-09-23T18:35:00-04:00"
+    assert ticker_start("KXNFLGAME-26SEP20NOBAL") is None
+
+
+def _mlb_kalshi(ticker, teams, side_label):
+    event = {"event_ticker": ticker, "title": "Toronto vs Baltimore" if "TOR" in ticker else "Houston vs Seattle",
+             "markets": [{"ticker": f"{ticker}-X", "yes_sub_title": side_label, "title": "",
+                          "close_time": "2026-09-25T10:00:00Z", "volume_fp": "1000.00"}]}
+    return kalshi_sports(event, SERIES_NFL, "MLB", teams)
+
+
+def _mlb_poly(fees, teams, outcomes, start, side):
+    m = p_market(f"{outcomes[0]} vs. {outcomes[1]}", outcomes=outcomes, tokens=(f"a{start}", f"b{start}"),
+                 conditionId=f"0x{start}", gameStartTime=start, sportsMarketType="moneyline")
+    return [l for l in poly_sports(p_event(["mlb"], []), m, fees, "MLB", teams) if l.meta["side"] == side]
+
+
+def test_sports_games_of_a_series_do_not_cross_match(cfg, fees, teams):
+    # 22-23 Sept 2026, the pairs that settled differently or showed 26-cent edges on the desk.
+    # Toronto-Baltimore: Kalshi lists 22 Sept 18:35 and 23 Sept 18:35 (Eastern); Polymarket lists
+    # 23 Sept 13:35 and 23 Sept 18:35. Only the two 23 Sept 18:35 games are the same game.
+    tor = ("Toronto Blue Jays", "Baltimore Orioles")
+    k_legs = _mlb_kalshi("KXMLBGAME-26SEP221835TORBAL", teams, "Toronto") \
+        + _mlb_kalshi("KXMLBGAME-26SEP231835TORBAL", teams, "Toronto")
+    p_legs = _mlb_poly(fees, teams, tor, "2026-09-23 17:35:00+00", "TOR") \
+        + _mlb_poly(fees, teams, tor, "2026-09-23 22:35:00+00", "TOR")
+    pairs, _ = build_pairs(k_legs, p_legs, cfg, Overrides({}))
+    assert [(p.legs["kalshi"].market_id, p.legs["polymarket"].extra["game_start"]) for p in pairs] == \
+        [("KXMLBGAME-26SEP231835TORBAL-X", "2026-09-23T22:35:00+00:00")]
+    # Houston-Seattle: Kalshi's 23 Sept game while Polymarket still lists only the 22 Sept one
+    k_hou = _mlb_kalshi("KXMLBGAME-26SEP232210HOUSEA", teams, "Houston")
+    p_hou = _mlb_poly(fees, teams, ("Houston Astros", "Seattle Mariners"), "2026-09-23 01:40:00+00", "HOU")
+    assert build_pairs(k_hou, p_hou, cfg, Overrides({}))[0] == []
+    # and the same game pairs, its start recorded on both legs
+    p_same = _mlb_poly(fees, teams, ("Houston Astros", "Seattle Mariners"), "2026-09-24 02:10:00+00", "HOU")
+    pairs, _ = build_pairs(k_hou, p_same, cfg, Overrides({}))
+    assert len(pairs) == 1 and pairs[0].klass == "exact"
+    assert pairs[0].legs["kalshi"].extra["game_start"] == "2026-09-23T22:10:00-04:00"
 
 
 def test_team_disambiguation(teams):
@@ -216,3 +261,17 @@ def test_sports_close_is_capped_to_game_day(cfg, fees, teams):
                  gameStartTime="2026-09-18 22:40:00+00", endDate="2026-09-22T23:00:00Z", sportsMarketType="moneyline")
     p = poly_sports(p_event(["mlb"], []), m, fees, "MLB", teams)[0]
     assert abs(p.leg.close_ts - k.leg.close_ts) < 1
+
+
+def test_sports_doubleheader_without_a_start_is_not_guessed(cfg, fees, teams):
+    # two Toronto-Baltimore games on one day; Polymarket gives the start of the second only
+    tor = ("Toronto Blue Jays", "Baltimore Orioles")
+    k_legs = _mlb_kalshi("KXMLBGAME-26SEP231305TORBAL", teams, "Toronto") \
+        + _mlb_kalshi("KXMLBGAME-26SEP231835TORBAL", teams, "Toronto")
+    no_start = p_market("Toronto Blue Jays vs. Baltimore Orioles (game 1)", outcomes=tor, tokens=("g1a", "g1b"),
+                        conditionId="0xg1", endDate="2026-09-23T23:00:00Z", sportsMarketType="moneyline")
+    p_legs = [l for l in poly_sports(p_event(["mlb"], []), no_start, fees, "MLB", teams) if l.meta["side"] == "TOR"] \
+        + _mlb_poly(fees, teams, tor, "2026-09-23 22:35:00+00", "TOR")
+    pairs, _ = build_pairs(k_legs, p_legs, cfg, Overrides({}))
+    assert [(p.legs["kalshi"].market_id, p.legs["polymarket"].market_id) for p in pairs] == \
+        [("KXMLBGAME-26SEP231835TORBAL-X", "0x2026-09-23 22:35:00+00")]

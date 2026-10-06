@@ -136,6 +136,16 @@ def ticker_date(ticker: str | None) -> date | None:
         return None
 
 
+def ticker_start(ticker: str | None) -> datetime | None:
+    """Scheduled start, Eastern, when the ticker carries one after its date:
+    KXMLBGAME-26SEP231835TORBAL -> 2026-09-23 18:35 ET. NFL tickers carry the day only."""
+    day = ticker_date(ticker)
+    m = re.search(r"-\d{2}[A-Z]{3}\d{2}(\d{2})(\d{2})(?=[A-Z])", (ticker or "").upper())
+    if not day or not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+        return None
+    return et_datetime(day, int(m.group(1)), int(m.group(2)))
+
+
 def ticker_month(ticker: str | None) -> tuple[int, int] | None:
     """KXFEDDECISION-26SEP -> (2026, 9)."""
     if not ticker:

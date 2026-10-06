@@ -46,7 +46,7 @@ history (weekly)   Kalshi 1-minute bid/ask candles vs Polymarket price series: U
 |---|---|---|---|---|
 | crypto | `strike_type`, `floor_strike`/`cap_strike`, `close_time`, series settlement source | question regex (asset, above/below, threshold, date) + description clock and source | asset, comparator, threshold, reference instant | exact only if source and instant agree, otherwise basis |
 | macro | FOMC decision wording per meeting month; CPI threshold via strike fields | question regex | indicator, period, decision kind or threshold | exact |
-| sports | event title (two teams) + market `yes_sub_title`; game day from ticker | two-outcome moneyline, team names, `gameStartTime` | league, game day, winning team | exact, with tie and postponement rules flagged as unverified |
+| sports | event title (two teams) + market `yes_sub_title`; game day and scheduled start from ticker (NFL tickers give the day only) | two-outcome moneyline, team names, `gameStartTime` | league, game day, winning team; scheduled starts within two hours when both are known | exact, with tie and postponement rules flagged as unverified |
 
 Anything a parser is unsure about is dropped and listed in `data/universe/unmatched_*.json`.
 Manual control lives in `config/pair_overrides.yaml` (exclude, reclass). No fuzzy text matching:
@@ -111,6 +111,7 @@ pmx run
 pmx report [--date 2026-09-19]
 pmx history
 pmx status
+pmx final --since 2026-09-22
 ```
 
 Deployment on the VPS: `deploy/DEPLOY.md`.
@@ -141,6 +142,16 @@ settled would leave a loss with no possible offset. `pmx recover` lists them; `p
 reverses whatever was booked on the pair, returns the notional, keeps only the fees actually paid,
 and excludes the pair from the study. Pair definitions are persisted for everything held or
 watched, and the universe is archived once per run, so this should not recur.
+
+Two games joined as one (found and fixed on 6 October 2026). Sports pairs were joined on the game
+day, and across days within 36 hours, which paired different games of a series or of a postponed
+game played in a doubleheader, for instance Toronto-Baltimore and Houston-Seattle on 22 and 23
+September. Both settlements that differed in the exact class came from such pairs, and so did the
+26-cent edges of 23 September. Pairs now join on the scheduled start when both venues give it,
+within two hours. When the Kalshi ticker gives the day only (NFL), they join on the Eastern day,
+and only if that day has one game of the pair on each venue; across days they never join without
+both starts. `pmx final` applies this rule to the starts recorded in every archived definition,
+lists the pairs it rejects and reports the exact class with them set apart.
 
 ## What the numbers do not mean
 

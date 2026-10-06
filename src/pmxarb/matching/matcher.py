@@ -25,7 +25,26 @@ from .families import CanonLeg
 
 # Loose-join tolerance on the reference instant. Kalshi lists hourly above/below crypto series, so
 # "same threshold, same ET day" alone would pair a noon Polymarket market with a 23:00 Kalshi one.
-LOOSE_TOLERANCE_S = {"sports": 36 * 3600, "crypto": 6 * 3600, "macro": 0}
+LOOSE_TOLERANCE_S = {"crypto": 6 * 3600, "macro": 0}
+
+# Sports pair on the scheduled start, not on a day window: a day window paired different games of a
+# series (Toronto-Baltimore and Houston-Seattle, 22-23 September 2026). Both venues give the start
+# to the minute; two hours absorbs listing differences and stays below the gap to a postponed game,
+# the other game of a doubleheader or the next game of a series. Kalshi's NFL tickers carry the day
+# only: such a leg pairs on the same Eastern day, when that day has one game of the pair on each
+# venue, and never across days.
+SPORTS_START_TOLERANCE_S = 2 * 3600
+
+
+def _start_gap(k: CanonLeg, p: CanonLeg) -> float | None:
+    ks, ps = k.meta.get("start"), p.meta.get("start")
+    return abs((ks - ps).total_seconds()) if ks and ps else None
+
+
+def _same_game(k: CanonLeg, p: CanonLeg, alone: bool) -> bool:
+    """Known starts must agree; without them, only a day with one game of the pair on each venue."""
+    gap = _start_gap(k, p)
+    return gap <= SPORTS_START_TOLERANCE_S if gap is not None else alone
 
 
 def _pair_id(family: str, key: str, k_id: str, p_id: str) -> str:
@@ -39,7 +58,8 @@ def classify(k: CanonLeg, p: CanonLeg, exact_key: bool) -> tuple[str, list[str]]
     ks, ps = k.sources, p.sources
     if fam == "sports":
         if not exact_key:
-            notes.append(f"game day differs: kalshi {k.meta.get('day')} vs polymarket {p.meta.get('day')} (timezone or listing)")
+            notes.append(f"game day differs: kalshi {k.meta.get('day')} vs polymarket {p.meta.get('day')}; "
+                         "scheduled starts agree")
         notes.append("official result on both venues; tie and postponement rules not verified")
         return "exact", notes
     if fam == "macro":
@@ -110,8 +130,10 @@ def build_pairs(k_legs: list[CanonLeg], p_legs: list[CanonLeg], cfg: Config,
     used: set[str] = set()
     pairs: list[Pair] = []
     stats: dict[str, Any] = defaultdict(lambda: defaultdict(int))
+    k_per_key: dict[str, int] = defaultdict(int)
     for leg in k_legs:
         stats[leg.family]["kalshi_legs"] += 1
+        k_per_key[leg.key] += 1
     for leg in p_legs:
         stats[leg.family]["polymarket_legs"] += 1
 
@@ -132,6 +154,9 @@ def build_pairs(k_legs: list[CanonLeg], p_legs: list[CanonLeg], cfg: Config,
     pending: list[CanonLeg] = []
     for k in k_legs:
         cands = [p for p in by_key.get(k.key, []) if p.leg.leg_id not in used]
+        if k.family == "sports":    # a same-day game that starts at another time is another game
+            alone = k_per_key[k.key] == 1 and len(by_key[k.key]) == 1
+            cands = [p for p in cands if _same_game(k, p, alone)]
         if cands:
             make(k, max(cands, key=lambda p: p.leg.volume), True)
         else:
@@ -140,7 +165,10 @@ def build_pairs(k_legs: list[CanonLeg], p_legs: list[CanonLeg], cfg: Config,
     for k in pending:
         tol = LOOSE_TOLERANCE_S.get(k.family, 0)
         cands = [p for p in by_block.get(k.block, []) if p.leg.leg_id not in used]
-        if tol > 0 and k.when is not None:
+        if k.family == "sports":    # across days only when both scheduled starts say it is one game
+            cands = [p for p in cands if _same_game(k, p, alone=False)]
+            cands.sort(key=lambda p: (_start_gap(k, p), -p.leg.volume))
+        elif tol > 0 and k.when is not None:
             cands = [p for p in cands if p.when is not None and abs((p.when - k.when).total_seconds()) <= tol]
             cands.sort(key=lambda p: (abs((p.when - k.when).total_seconds()), -p.leg.volume))
         else:

@@ -173,6 +173,7 @@ def kalshi_sports(event: dict, series: dict, league: str, teams: N.TeamBook) -> 
     ev_teams = teams.find(ev_text, league)
     out: list[CanonLeg] = []
     game_day = N.ticker_date(event.get("event_ticker"))
+    start = N.ticker_start(event.get("event_ticker"))
     for m in event.get("markets") or []:
         m_text = " ".join(str(m.get(k) or "") for k in ("title", "subtitle", "yes_sub_title"))
         cands = ev_teams if len(ev_teams) == 2 else teams.find(f"{ev_text} {m_text}", league)
@@ -191,9 +192,12 @@ def kalshi_sports(event: dict, series: dict, league: str, teams: N.TeamBook) -> 
         block = f"sports|{league}|{a}|{b}|{side}"
         title = f"{event.get('title', '')}: {m.get('yes_sub_title') or side}"
         leg = _k_leg(m, series, title, yes_label=str(m.get("yes_sub_title") or side))
+        if start:
+            leg.extra["game_start"] = start.isoformat()
         leg.close_ts = min(leg.close_ts or float("inf"), _game_end_ts(day))
         out.append(CanonLeg("sports", key, block, datetime(day.year, day.month, day.day, tzinfo=N.ET), leg,
-                            {"official"}, {"league": league, "teams": [a, b], "side": side, "day": day.isoformat()}))
+                            {"official"}, {"league": league, "teams": [a, b], "side": side, "day": day.isoformat(),
+                                           "start": start}))
     return out
 
 
@@ -347,7 +351,8 @@ def poly_sports(event: dict, m: dict, fees: FeeModel, league: str, teams: N.Team
     codes = [teams.find(o, league) for o in outcomes]
     if any(len(c) != 1 for c in codes) or codes[0][0] == codes[1][0]:
         return []
-    start = N.parse_iso(m.get("gameStartTime")) or N.parse_iso(event.get("startDate")) or N.parse_iso(m.get("endDate"))
+    game_start = N.parse_iso(m.get("gameStartTime"))   # the only field that is the game's own start
+    start = game_start or N.parse_iso(event.get("startDate")) or N.parse_iso(m.get("endDate"))
     if not start:
         return []
     day = N.et_date(start)
@@ -359,10 +364,12 @@ def poly_sports(event: dict, m: dict, fees: FeeModel, league: str, teams: N.Team
         block = f"sports|{league}|{a}|{b}|{side}"
         leg = _p_leg(event, m, fees, "sports", tokens[i], tokens[1 - i], f"{q}: {outcomes[i]}", outcomes[i],
                      source="official")
-        leg.extra["game_start"] = start.isoformat()
+        if game_start:
+            leg.extra["game_start"] = game_start.isoformat()
         leg.close_ts = min(leg.close_ts or float("inf"), _game_end_ts(day))
         out.append(CanonLeg("sports", key, block, datetime(day.year, day.month, day.day, tzinfo=N.ET), leg,
-                            {"official"}, {"league": league, "teams": [a, b], "side": side, "day": day.isoformat()}))
+                            {"official"}, {"league": league, "teams": [a, b], "side": side, "day": day.isoformat(),
+                                           "start": game_start}))
     return out
 
 
