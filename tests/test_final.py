@@ -47,3 +47,30 @@ def test_final_runs_when_no_pair_is_flagged(cfg, capsys):
     (cfg.data / "universe" / "pairs_20260923-050000.json").write_text(json.dumps({"pairs": [SAME]}))
     assert cmd_final(cfg, None) == 0
     assert "0 archived sports pairs joined two different games" in capsys.readouterr().out
+
+
+def test_final_counterfactual_and_divergence_leave_the_other_games_out(cfg, capsys):
+    (cfg.data / "universe").mkdir(parents=True, exist_ok=True)
+    (cfg.data / "blotter").mkdir(parents=True, exist_ok=True)
+    (cfg.data / "universe" / "pairs_20260923-050000.json").write_text(json.dumps({"pairs": [SAME, OTHER_DAY]}))
+
+    def jl(name, rows):
+        (cfg.data / "blotter" / name).write_text("\n".join(json.dumps(r) for r in rows))
+
+    combo = "kalshi:yes+polymarket:no"
+    jl("detections.jsonl", [{"ts": 1_790_000_000 + i, "pair_id": p["pair_id"], "klass": "exact", "combo": combo,
+                             "edge_per_contract": e, "qty": 100} for i, (p, e) in enumerate([(SAME, 0.01), (OTHER_DAY, 0.27)])])
+    # the same game pays one; two different games here pay two (both YES legs won)
+    jl("observations.jsonl", [
+        {"ts": 1_790_100_000, "pair_id": SAME["pair_id"], "klass": "exact", "complete": True, "divergent": False,
+         "yes_value": {"kalshi": 1.0, "polymarket": 1.0}},
+        {"ts": 1_790_100_000, "pair_id": OTHER_DAY["pair_id"], "klass": "exact", "complete": True, "divergent": True,
+         "yes_value": {"kalshi": 1.0, "polymarket": 0.0}}])
+    jl("episodes.jsonl", [{"last_ts": 1_790_000_000, "pair_id": SAME["pair_id"], "klass": "exact", "lifetime_s": 0.0}])
+    assert cmd_final(cfg, None) == 0
+    out = capsys.readouterr().out
+    obs = out.split("### Pairs observed to settlement")[1].split("###")[0]
+    assert "| False | 1 | 0 |" in obs and "| True | 1 | 1 |" in obs
+    cf = out.split("### Counterfactual")[1]
+    assert "| exact | 1 | 0 |" in cf
+    assert "| False | 1 | 0.0 | 0.0 | 100.0 |" in out.split("### Episodes")[1]

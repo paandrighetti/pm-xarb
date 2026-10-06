@@ -396,7 +396,7 @@ def cmd_final(cfg: Config, since: str | None) -> int:
         con.executemany("INSERT INTO flagged VALUES (?)", [(p,) for p in flagged])
     bl = cfg.data / "blotter"
 
-    def table(title: str, path: str, select: str) -> None:
+    def table(title: str, path: str, select: str, tcol: str = "ts") -> None:
         print(f"\n### {title}\n")
         p = bl / path
         if not p.exists() or p.stat().st_size == 0:
@@ -405,7 +405,7 @@ def cmd_final(cfg: Config, since: str | None) -> int:
         try:
             cur = con.execute(f"SELECT pair_id IN (SELECT pair_id FROM flagged) AS other_game, {select} "
                               f"FROM read_ndjson_auto('{p.as_posix()}', ignore_errors=true) "
-                              "WHERE klass = 'exact' AND ts >= ? GROUP BY 1 ORDER BY 1", [t0])
+                              f"WHERE klass = 'exact' AND {tcol} >= ? GROUP BY 1 ORDER BY 1", [t0])
         except duckdb.Error as exc:
             print(f"({path}: {exc})")
             return
@@ -428,6 +428,16 @@ def cmd_final(cfg: Config, since: str | None) -> int:
           "count(*) FILTER (WHERE status = 'missed') AS missed")
     table("Detections", "detections.jsonl",
           "count(*) AS n, round(100 * avg(edge_per_contract), 3) AS mean_edge_cents")
+    table("Episodes", "episodes.jsonl",
+          "count(*) AS episodes, round(median(lifetime_s), 1) AS median_life_s, "
+          "round(quantile_cont(lifetime_s, 0.9), 1) AS p90_life_s, "
+          "round(100 * avg(CASE WHEN lifetime_s = 0 THEN 1.0 ELSE 0.0 END), 1) AS single_poll_pct", tcol="last_ts")
+    table("Pairs observed to settlement", "observations.jsonl",
+          "count(DISTINCT pair_id) FILTER (WHERE complete) AS pairs, "
+          "count(DISTINCT pair_id) FILTER (WHERE complete AND divergent) AS divergent")
+    from .report import Report
+    print("\n### Counterfactual since inception, pairs that joined two games left out\n")
+    print(Report(cfg)._counterfactual(skip=set(flagged)))
     return 0
 
 

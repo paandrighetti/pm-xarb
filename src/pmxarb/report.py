@@ -195,11 +195,12 @@ class Report:
     def _side_value(yes_value: float, side: str) -> float:
         return yes_value if side == "yes" else 1.0 - yes_value
 
-    def _counterfactual(self) -> str:
+    def _counterfactual(self, skip: set[str] | None = None) -> str:
         """What a hedge would have returned on the pairs we watched without trading. Priced at the
         FIRST opportunity seen on each pair, not the best: taking the peak would be choosing the
         entry after seeing the whole day. Payout is each venue's own settlement, so a divergence
-        pays 0 or 2 and shows up as the tail this class actually carries."""
+        pays 0 or 2 and shows up as the tail this class actually carries. `skip` leaves pairs out
+        (pmx final: the pairs that joined two different games)."""
         det = self.q("SELECT pair_id, klass, combo, edge_per_contract, qty, ts FROM detections ORDER BY ts")
         obs = self.q("SELECT pair_id, klass, yes_value, divergent FROM observations WHERE complete")
         if not det or not obs:
@@ -209,6 +210,8 @@ class Report:
             first.setdefault(d["pair_id"], d)
         rows: list[dict[str, Any]] = []
         for o in obs:
+            if skip and o["pair_id"] in skip:
+                continue
             d = first.get(o["pair_id"])
             vals = o.get("yes_value") or {}
             if not d or len(vals) != 2:
