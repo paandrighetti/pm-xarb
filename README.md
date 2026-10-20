@@ -3,7 +3,11 @@
 Cross-venue prediction-market arbitrage desk for Kalshi and Polymarket. It matches markets
 deterministically, records both order books side by side, detects hedged combinations that cost
 less than one dollar after fees, executes them on paper with leg risk and per-venue capital, and
-reports daily. It runs unattended in one container.
+reports daily. It ran unattended in one container.
+
+**Status: closed.** The desk was frozen on 6 October 2026, after the final analysis in
+[pm-edge-report](https://github.com/paandrighetti/pm-edge-report), section 5, and stopped on
+20 October 2026.
 
 It is a measurement instrument, not a trading bot. Nothing here signs an order.
 
@@ -186,3 +190,7 @@ two-sided conversion including polarity, the two-ladder walk, the three parser f
 polarity and disambiguation, the matcher classes and overrides, the paper state machine (hedged
 fill, leg failure and unwind, basis divergence, caps, state round trip) and an offline
 end-to-end run of the desk plus report with fake venues.
+
+## License
+
+MIT. See [LICENSE](./LICENSE).
