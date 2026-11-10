@@ -5,18 +5,32 @@ deterministically, records both order books side by side, detects hedged combina
 less than one dollar after fees, executes them on paper with leg risk and per-venue capital, and
 reports daily. It ran unattended in one container.
 
-**Status: closed.** The desk was frozen on 6 October 2026, after the final analysis in
-[pm-edge-report](https://github.com/paandrighetti/pm-edge-report), section 5, and stopped on
-20 October 2026.
+**Status: closed.** The desk was frozen on 6 October 2026 and stopped on 20 October 2026. The
+closeout of 30 October 2026 gives the final figures below.
 
 It is a measurement instrument, not a trading bot. Nothing here signs an order.
 
-## Results so far
+## Results
 
-[pm-edge-report](https://github.com/paandrighetti/pm-edge-report), section 5, analyses the
-desk's outputs up to 23 September 2026. Exact pairs: edges after fees that often last a single
-poll, no divergent settlement, and a net paper loss so far. Basis pairs: more entry edge than
-exact pairs, and a negative result at settlement over the pairs resolved so far.
+Final figures from the closeout of 30 October 2026: `pmx final` on the archived record, data
+read-only, with the 11 pairs that joined two different games set apart (see Incidents).
+[pm-edge-report](https://github.com/paandrighetti/pm-edge-report), section 5, analyses the record
+up to 6 October 2026.
+
+* **Exact pairs.** 188 pairs were observed to settlement and none settled differently on the two
+  venues. The mean detected edge is 0.73 cents per contract after both venues' fees, and four gaps
+  in five were seen on a single poll (median lifetime 0 s, 90th percentile 6 s). Traded on paper
+  from 22 September 2026, with fills taken from the next books of both venues at once (an upper
+  bound), 46 intents filled for 8,786 contracts while 141 found the books gone one poll later; the
+  44 pairs resolved since then gained 46 USD. Since inception, the 88 resolved pairs total -49 USD.
+* **Basis pairs.** Held without capital from the first opportunity on each of 159 pairs, the mean
+  entry edge is 0.96 cents per contract and the mean result at settlement +0.34 cents. 5 pairs
+  (3.1 %) settled differently on the two venues; the worst lost 99.7 cents per contract. That tail
+  is what the entry edge pays for.
+* **Realized total.** -543 USD at the stop, -541 USD with the two FOMC pairs of October, which
+  settled the same way on both venues after the stop. It also carries the first days, when each
+  leg was priced on its own, the cost of selling naked legs, the basis pairs traded in those days
+  and the pairs that joined two games.
 
 ## What question it answers
 
@@ -155,7 +169,15 @@ September. Both settlements that differed in the exact class came from such pair
 within two hours. When the Kalshi ticker gives the day only (NFL), they join on the Eastern day,
 and only if that day has one game of the pair on each venue; across days they never join without
 both starts. `pmx final` applies this rule to the starts recorded in every archived definition,
-lists the pairs it rejects and reports the exact class with them set apart.
+lists the pairs it rejects and reports the exact class with them set apart. It rejects 9 pairs.
+
+A second case, found at the closeout on 30 October 2026, which the start-time rule cannot see.
+After a rainout moved the ALCS (Tampa Bay vs Cleveland) by a day, Kalshi's market for Game 5 kept
+its original slot, 17 October at 20:00 Eastern, and Polymarket rescheduled its market for Game 4
+into that slot. The two pairs (`sports-b8151c57ea`, `sports-b565a3bb50`) carried 10,199 of the
+11,924 exact detections from 6 October, at a mean edge of 37 cents. Tampa Bay won both games, so
+both venues settled them the same way by chance. The closeout extends the rule to these two pair
+ids; the code in this repository was not changed, since the desk had stopped.
 
 ## What the numbers do not mean
 
